@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Norse Board Game - Orlog Inspired</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Roboto:wght@300;400;500&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <!-- Screen Size Warning -->
+    <div id="screen-warning" class="screen-warning">
+        <div class="warning-content">
+            <h2>⚠️ Screen Too Small</h2>
+            <p>This game requires a minimum screen size of 1280x720 pixels.</p>
+            <p>Please use a larger screen or maximize your browser window.</p>
+        </div>
+    </div>
+
+    <!-- Landing Page -->
+    <div id="landing-page" class="page active">
+        <div class="landing-container">
+            <h1 class="game-title">Norse Board Game</h1>
+            <p class="game-subtitle">A Strategic Battle of Dice and Divine Favor</p>
+
+            <div id="profile-section" class="profile-section">
+                <h2>Create Your Profile</h2>
+                <div class="profile-form">
+                    <input type="text" id="username-input" placeholder="Enter your name" maxlength="20">
+
+                    <div class="avatar-selection">
+                        <p>Choose your avatar color:</p>
+                        <div class="avatar-colors">
+                            <div class="avatar-option" data-color="#8B4513" style="background: #8B4513;"></div>
+                            <div class="avatar-option" data-color="#CD853F" style="background: #CD853F;"></div>
+                            <div class="avatar-option" data-color="#D2691E" style="background: #D2691E;"></div>
+                            <div class="avatar-option" data-color="#A0522D" style="background: #A0522D;"></div>
+                            <div class="avatar-option" data-color="#8B7355" style="background: #8B7355;"></div>
+                            <div class="avatar-option" data-color="#6B4423" style="background: #6B4423;"></div>
+                        </div>
+                        <div id="avatar-preview" class="avatar-preview"></div>
+                    </div>
+
+                    <button id="find-match-btn" class="btn-primary" disabled>Find Match</button>
+                </div>
+            </div>
+
+            <div id="matchmaking-section" class="matchmaking-section hidden">
+                <div class="loading-spinner"></div>
+                <p>Searching for an opponent...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Page -->
+    <div id="game-page" class="page">
+        <!-- Coin Toss Modal -->
+        <div id="toss-modal" class="modal">
+            <div class="modal-content">
+                <h2>Sikka - The Toss</h2>
+                <p>Choose your side</p>
+                <div class="coin-container">
+                    <div id="coin" class="coin">
+                        <div class="coin-face heads">HEADS</div>
+                        <div class="coin-face tails">TAILS</div>
+                    </div>
+                </div>
+                <div class="toss-choices">
+                    <button class="btn-choice" data-choice="heads">Heads</button>
+                    <button class="btn-choice" data-choice="tails">Tails</button>
+                </div>
+                <p id="toss-message" class="toss-message"></p>
+            </div>
+        </div>
+
+        <!-- Toss Result Modal -->
+        <div id="toss-result-modal" class="modal">
+            <div class="modal-content">
+                <h2 id="toss-result-title"></h2>
+                <p id="toss-result-message"></p>
+                <button id="lets-play-btn" class="btn-primary">Let's Play</button>
+            </div>
+        </div>
+
+        <!-- Phase Announcement -->
+        <div id="phase-announcement" class="phase-announcement">
+            <h2 id="phase-title"></h2>
+        </div>
+
+        <!-- Game Board -->
+        <div id="game-board" class="game-board">
+            <!-- Opponent Section (Top) -->
+            <div class="player-section opponent-section">
+                <div class="health-display">
+                    <div class="stone-container" id="opponent-health">
+                        <div class="stone-icon"></div>
+                        <span class="health-count">20</span>
+                    </div>
+                </div>
+
+                <div class="play-area">
+                    <div id="opponent-username" class="player-name"></div>
+                    <div id="opponent-pasa-area" class="pasa-display-area"></div>
+                    <div id="opponent-roll-status" class="roll-status"></div>
+                </div>
+
+                <div class="devta-display">
+                    <div class="token-container" id="opponent-tokens">
+                        <div class="token-icon"></div>
+                        <span class="token-count">2</span>
+                    </div>
+                    <div id="opponent-devta-card" class="devta-card">
+                        <div class="card-front">
+                            <div class="card-name"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- War Zone (Middle) -->
+            <div class="war-zone">
+                <div id="opponent-selected-pasa" class="selected-pasa-zone"></div>
+                <div class="zone-divider"></div>
+                <div id="player-selected-pasa" class="selected-pasa-zone"></div>
+            </div>
+
+            <!-- Player Section (Bottom) -->
+            <div class="player-section player-own-section">
+                <div class="health-display">
+                    <div class="stone-container" id="player-health">
+                        <div class="stone-icon"></div>
+                        <span class="health-count">20</span>
+                    </div>
+                </div>
+
+                <div class="play-area">
+                    <div id="player-username" class="player-name"></div>
+                    <div id="player-controls" class="player-controls">
+                        <button id="roll-pasa-btn" class="btn-action" disabled>Roll Pasa</button>
+                        <button id="complete-turn-btn" class="btn-action" disabled>Complete Turn</button>
+                    </div>
+                    <div id="player-pasa-area" class="pasa-area"></div>
+                </div>
+
+                <div class="devta-display">
+                    <div class="token-container" id="player-tokens">
+                        <div class="token-icon"></div>
+                        <span class="token-count">2</span>
+                    </div>
+                    <div id="player-devta-card" class="devta-card clickable">
+                        <div class="card-front">
+                            <div class="card-name"></div>
+                        </div>
+                        <div class="card-back">
+                            <div class="card-details"></div>
+                        </div>
+                    </div>
+                    <div id="devta-selection" class="devta-selection hidden">
+                        <p>Use Devik Vardan?</p>
+                        <button class="btn-small" data-use="true">Yes</button>
+                        <button class="btn-small" data-use="false">No</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Over Modal -->
+        <div id="game-over-modal" class="modal">
+            <div class="modal-content">
+                <h2 id="game-over-title"></h2>
+                <p id="game-over-message"></p>
+                <button id="exit-game-btn" class="btn-primary">Exit Game</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="js/gameData.js"></script>
+    <script src="js/socket.js"></script>
+    <script src="js/animations.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/gameState.js"></script>
+    <script src="js/main.js"></script>
+</body>
+
+</html>
