@@ -368,6 +368,34 @@ body {
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
 }
 
+/* Combat Announcement (Bottom) */
+.combat-announcement {
+  position: fixed;
+  bottom: 10%;
+  left: 50%;
+  transform: translate(-50%, 0);
+  background: rgba(26, 20, 16, 0.9);
+  padding: 1rem 3rem;
+  border: 2px solid var(--copper);
+  border-radius: 10px;
+  z-index: 900;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+}
+
+.combat-announcement.show {
+  opacity: 1;
+}
+
+.combat-announcement h2 {
+  font-family: var(--font-body);
+  font-size: 1.5rem;
+  color: var(--gold);
+  text-align: center;
+}
+
 /* Game Board */
 .game-board {
   display: flex;

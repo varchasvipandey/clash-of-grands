@@ -29,6 +29,10 @@ class GameUI {
       phaseAnnouncement: document.getElementById('phase-announcement'),
       phaseTitle: document.getElementById('phase-title'),
 
+      // Combat announcement (Bottom)
+      combatAnnouncement: document.getElementById('combat-announcement'),
+      combatMessage: document.getElementById('combat-message'),
+
       // Player elements
       playerUsername: document.getElementById('player-username'),
       playerHealth: document.getElementById('player-health'),
@@ -183,10 +187,13 @@ class GameUI {
 
   sendTossChoice(choice) {
     window.socketManager.sendTossChoice(choice);
-    this.elements.tossMessage.textContent = `You chose ${choice}. Flipping...`;
-    
-    // Start coin flip animation
-    Animations.flipCoin(this.elements.coin, choice);
+    // Animation now triggered by server event for both players
+  }
+
+  onTossStarted(data) {
+    this.elements.tossMessage.textContent = `Flipping the Sikka...`;
+    // Start coin flip animation for everyone
+    Animations.flipCoin(this.elements.coin, data.choice);
   }
 
   onTossAutoAssigned(choice) {
@@ -201,16 +208,33 @@ class GameUI {
     const resultText = data.result.toUpperCase();
     
     this.elements.tossResultTitle.textContent = `${resultText} it is!`;
+    // Winner goes SECOND (strategic advantage)
     this.elements.tossResultMessage.textContent = isWinner ? 
-      'You will go first' : 'You will go second';
+      'You won! You will go second (strategic advantage)' : 
+      'You lost. You will go first';
     
     this.elements.tossResultModal.classList.add('active');
   }
 
   onGameStart(data) {
-    // Display Devta cards
-    this.displayDevtaCard(this.elements.playerDevtaCard, window.gameState.player.devtaCard);
-    this.displayDevtaCard(this.elements.opponentDevtaCard, window.gameState.opponent.devtaCard);
+    // Display Devta cards based on player role
+    // Player1 sees player1's card, Player2 sees player2's card
+    if (window.socketManager.playerRole === 'player1') {
+      this.displayDevtaCard(this.elements.playerDevtaCard, data.gameState.player1.devtaCard);
+      this.displayDevtaCard(this.elements.opponentDevtaCard, data.gameState.player2.devtaCard);
+      
+      // Update game state
+      window.gameState.player.devtaCard = data.gameState.player1.devtaCard;
+      window.gameState.opponent.devtaCard = data.gameState.player2.devtaCard;
+    } else {
+      // Player2 sees player2's card as their own
+      this.displayDevtaCard(this.elements.playerDevtaCard, data.gameState.player2.devtaCard);
+      this.displayDevtaCard(this.elements.opponentDevtaCard, data.gameState.player1.devtaCard);
+      
+      // Update game state
+      window.gameState.player.devtaCard = data.gameState.player2.devtaCard;
+      window.gameState.opponent.devtaCard = data.gameState.player1.devtaCard;
+    }
 
     // Update displays
     this.updateHealthDisplay('player', window.gameState.player.health);
@@ -248,6 +272,15 @@ class GameUI {
   announcePhase(phase, message) {
     this.elements.phaseTitle.textContent = message || phase;
     Animations.showPhaseAnnouncement(this.elements.phaseAnnouncement, message);
+  }
+
+  announceCombat(message) {
+    this.elements.combatMessage.textContent = message;
+    this.elements.combatAnnouncement.classList.add('show');
+    
+    setTimeout(() => {
+      this.elements.combatAnnouncement.classList.remove('show');
+    }, 1500);
   }
 
   onPasaRolled(data) {
@@ -328,10 +361,10 @@ class GameUI {
     const isPlayer = data.playerId === window.gameState.player.id;
     
     if (!isPlayer) {
-      // Show opponent's selected pasa count
-      const pasaEl = document.createElement('div');
-      pasaEl.className = 'pasa pasa-small';
-      pasaEl.textContent = '?';
+      // Show opponent's actual selected pasa (not hidden anymore)
+      const pasaEl = this.createPasaElement(data.pasaData);
+      pasaEl.classList.add('pasa-small');
+      pasaEl.dataset.pasaId = data.pasaData.pasaId;
       this.elements.opponentSelectedZone.appendChild(pasaEl);
     }
   }
@@ -369,58 +402,57 @@ class GameUI {
     Animations.updateCounter(countEl, newTokens, oldTokens);
   }
 
-  showDevtaEffect(data) {
-    // Show visual effect for Devta card activation
-    const message = `${data.cardName}: ${data.effect}`;
-    this.announcePhase('devta-effect', message);
-    
-    if (data.targetHealth !== undefined) {
-      const isPlayer = data.playerId === window.gameState.player.id;
-      this.updateHealthDisplay(isPlayer ? 'opponent' : 'player', data.targetHealth);
-    }
-  }
+  onCombatAction(data) {
+    // Handle each combat action individually with visual feedback
+    const { actionType, message, removePasa, playerHealth, opponentHealth, playerTokens, opponentTokens } = data;
 
-  onCombatResolved(data) {
-    // Determine which player we are and assign data accordingly
-    let myData, opponentData;
-    if (window.socketManager && window.socketManager.playerRole === 'player1') {
-      myData = data.player1;
-      opponentData = data.player2;
-    } else {
-      myData = data.player2;
-      opponentData = data.player1;
-    }
+    // Show message at the bottom for combat actions
+    this.announceCombat(message);
 
-    // Update health and tokens
-    this.updateHealthDisplay('player', myData.health);
-    this.updateHealthDisplay('opponent', opponentData.health);
-    this.updateTokenDisplay('player', myData.tokens);
-    this.updateTokenDisplay('opponent', opponentData.tokens);
-
-    // Animate combat log
-    this.animateCombat(data.combatLog);
-  }
-
-  animateCombat(combatLog) {
-    // Simple combat animation
-    let delay = 0;
-    combatLog.forEach(log => {
-      setTimeout(() => {
-        let message = '';
-        if (log.type === 'block') {
-          message = `${log.move} blocked by ${log.block}!`;
-        } else if (log.type === 'damage') {
-          message = `${log.attacker} deals damage!`;
-        } else if (log.type === 'steal') {
-          message = `${log.attacker} steals a token!`;
-        }
+    // Remove pasa from display if specified
+    if (removePasa) {
+      removePasa.forEach(removal => {
+        const zone = removal.player === 'player1' ? 
+          (window.socketManager.playerRole === 'player1' ? this.elements.playerSelectedZone : this.elements.opponentSelectedZone) :
+          (window.socketManager.playerRole === 'player2' ? this.elements.playerSelectedZone : this.elements.opponentSelectedZone);
         
-        if (message) {
-          this.announcePhase('combat', message);
+        const pasaEl = zone.querySelector(`[data-pasa-id="${removal.pasaId}"]`);
+        if (pasaEl) {
+          // Animate removal
+          pasaEl.style.transition = 'all 0.5s ease';
+          pasaEl.style.opacity = '0';
+          pasaEl.style.transform = 'scale(0.5)';
+          setTimeout(() => {
+            if (pasaEl.parentNode) {
+              pasaEl.parentNode.removeChild(pasaEl);
+            }
+          }, 500);
         }
-      }, delay);
-      delay += 800;
-    });
+      });
+    }
+
+    // Update health displays if provided
+    if (playerHealth !== undefined && opponentHealth !== undefined) {
+      // Determine which is which based on player role
+      if (window.socketManager.playerRole === 'player1') {
+        this.updateHealthDisplay('player', playerHealth);
+        this.updateHealthDisplay('opponent', opponentHealth);
+      } else {
+        this.updateHealthDisplay('player', opponentHealth);
+        this.updateHealthDisplay('opponent', playerHealth);
+      }
+    }
+
+    // Update token displays if provided
+    if (playerTokens !== undefined && opponentTokens !== undefined) {
+      if (window.socketManager.playerRole === 'player1') {
+        this.updateTokenDisplay('player', playerTokens);
+        this.updateTokenDisplay('opponent', opponentTokens);
+      } else {
+        this.updateTokenDisplay('player', opponentTokens);
+        this.updateTokenDisplay('opponent', playerTokens);
+      }
+    }
   }
 
   onNewRound(data) {
@@ -431,9 +463,7 @@ class GameUI {
     this.elements.opponentPasaArea.innerHTML = '';
     this.elements.opponentRollStatus.textContent = '';
 
-    // Update Devta cards
-    this.displayDevtaCard(this.elements.playerDevtaCard, data.player1Devta);
-    this.displayDevtaCard(this.elements.opponentDevtaCard, data.player2Devta);
+    // DO NOT update Devta cards - they persist throughout the game
 
     // Announce new round
     this.announcePhase('ran-neeti', 'New Round - Ran Neeti');

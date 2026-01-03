@@ -116,18 +116,11 @@ class GameState {
     this.player.selectedPasa = [];
     this.player.currentRoll = [];
     this.player.rollCount = 0;
+    // DO NOT reset player.devtaCard - it persists
 
     this.opponent.selectedPasa = [];
     this.opponent.rollCount = 0;
-
-    // Assign Devta cards based on player role
-    if (window.socketManager && window.socketManager.playerRole === 'player1') {
-      this.player.devtaCard = data.player1Devta;
-      this.opponent.devtaCard = data.player2Devta;
-    } else {
-      this.player.devtaCard = data.player2Devta;
-      this.opponent.devtaCard = data.player1Devta;
-    }
+    // DO NOT reset opponent.devtaCard - it persists
 
     this.currentPhase = data.phase;
     this.currentTurn = data.currentTurn;

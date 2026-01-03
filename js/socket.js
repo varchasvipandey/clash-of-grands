@@ -44,6 +44,10 @@ class SocketManager {
       window.gameUI.onTossAutoAssigned(choice);
     });
 
+    this.socket.on('toss-started', (data) => {
+      window.gameUI.onTossStarted(data);
+    });
+
     this.socket.on('toss-result', (data) => {
       window.gameUI.onTossResult(data);
     });
@@ -86,13 +90,9 @@ class SocketManager {
       window.gameUI.onTurnChange(data);
     });
 
-    // Combat events
-    this.socket.on('devta-effect', (data) => {
-      window.gameUI.showDevtaEffect(data);
-    });
-
-    this.socket.on('combat-resolved', (data) => {
-      window.gameUI.onCombatResolved(data);
+    // Combat events - Sequential actions
+    this.socket.on('combat-action', (data) => {
+      window.gameUI.onCombatAction(data);
     });
 
     this.socket.on('new-round', (data) => {

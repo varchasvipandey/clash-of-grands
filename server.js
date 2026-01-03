@@ -158,16 +158,24 @@ io.on('connection', (socket) => {
     const winnerId = Object.keys(game.tossChoices).find(
       id => game.tossChoices[id] === result
     );
+    const loserId = Object.keys(game.tossChoices).find(
+      id => game.tossChoices[id] !== result
+    );
 
-    game.firstPlayer = winnerId;
-    game.currentTurn = winnerId;
+    // Winner goes SECOND (strategic advantage)
+    game.firstPlayer = loserId;
+    game.currentTurn = loserId;
+
+    // Notify both players that toss has started with the choice
+    io.to(gameId).emit('toss-started', { choice });
 
     // Broadcast result after animation delay
     setTimeout(() => {
       io.to(gameId).emit('toss-result', {
         result,
         winnerId,
-        firstPlayer: winnerId
+        loserId,
+        firstPlayer: loserId  // Loser goes first
       });
 
       // Start Phase 1 after players acknowledge
@@ -244,9 +252,10 @@ io.on('connection', (socket) => {
 
     player.selectedPasa.push(pasaData);
 
+    // Broadcast with full pasa details so opponent can see what was selected
     io.to(gameId).emit('pasa-selected', {
       playerId: socket.id,
-      pasaData,
+      pasaData,  // Include full pasa data (type, yagya, etc.)
       selectedCount: player.selectedPasa.length
     });
   });
@@ -350,13 +359,15 @@ io.on('connection', (socket) => {
   });
 });
 
-// Combat resolution function
-function resolveCombat(gameId) {
+// Combat resolution function - Sequential with delays
+async function resolveCombat(gameId) {
   const game = activeGames.get(gameId);
   if (!game) return;
 
   const p1 = game.players.player1;
   const p2 = game.players.player2;
+
+  const combatActions = [];
 
   // Execute beginning-phase Devta cards (by priority)
   const beginningVardans = [];
@@ -370,120 +381,402 @@ function resolveCombat(gameId) {
 
   beginningVardans.sort((a, b) => a.card.priority - b.card.priority);
 
-  // Execute Devta effects
+  // Add Devta effects to actions
   beginningVardans.forEach(({ player, card, playerId }) => {
     if (player.tokens >= card.tokensRequired) {
-      player.tokens -= card.tokensRequired;
-      
       const opponent = player === p1 ? p2 : p1;
       
-      if (card.type === 'attacker') {
-        opponent.health -= card.damage;
-        io.to(gameId).emit('devta-effect', {
-          playerId,
-          cardName: card.name,
-          effect: `${card.damage} damage dealt`,
-          targetHealth: opponent.health
-        });
-      } else if (card.type === 'supporter' && card.affectedMove === 'dhal') {
-        opponent.selectedPasa = opponent.selectedPasa.filter(p => p.face.type !== 'dhal');
-        io.to(gameId).emit('devta-effect', {
-          playerId,
-          cardName: card.name,
-          effect: 'All Dhal removed from opponent'
-        });
-      } else if (card.type === 'supporter' && card.affectedMove === 'vardanTokens') {
-        const tokensToRemove = game.devtaSelection[opponent.id] ? 
-          opponent.devtaCard.tokensRequired : 0;
-        opponent.tokens = Math.max(0, opponent.tokens - tokensToRemove);
-        io.to(gameId).emit('devta-effect', {
-          playerId,
-          cardName: card.name,
-          effect: `${tokensToRemove} tokens removed from opponent`
-        });
-      }
+      combatActions.push({
+        type: 'devta-beginning',
+        playerId,
+        playerKey: player === p1 ? 'player1' : 'player2',
+        opponentKey: opponent === p1 ? 'player1' : 'player2',
+        card,
+        execute: () => {
+          player.tokens -= card.tokensRequired;
+          
+          if (card.type === 'attacker') {
+            opponent.health -= card.damage;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'devta-attack',
+                playerId,
+                cardName: card.name,
+                message: `${card.name}: ${card.damage} damage dealt!`,
+                playerHealth: p1.health,
+                opponentHealth: p2.health,
+                playerTokens: p1.tokens,
+                opponentTokens: p2.tokens
+              }
+            };
+          } else if (card.type === 'supporter' && card.affectedMove === 'dhal') {
+            const removedCount = opponent.selectedPasa.filter(p => p.face.type === 'dhal').length;
+            opponent.selectedPasa = opponent.selectedPasa.filter(p => p.face.type === 'dhal');
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'devta-remove',
+                playerId,
+                cardName: card.name,
+                message: `${card.name}: Removed ${removedCount} Dhal from opponent!`,
+                removePasa: { player: opponent === p1 ? 'player1' : 'player2', type: 'dhal' }
+              }
+            };
+          } else if (card.type === 'supporter' && card.affectedMove === 'vardanTokens') {
+            const tokensToRemove = game.devtaSelection[opponent.id] ? 
+              opponent.devtaCard.tokensRequired : 0;
+            opponent.tokens = Math.max(0, opponent.tokens - tokensToRemove);
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'devta-steal-tokens',
+                playerId,
+                cardName: card.name,
+                message: `${card.name}: Removed ${tokensToRemove} tokens from opponent!`,
+                playerTokens: p1.tokens,
+                opponentTokens: p2.tokens
+              }
+            };
+          }
+        }
+      });
     }
   });
 
-  // Resolve combat
-  const combatLog = [];
-  
-  // Process Yagya tokens first
-  p1.selectedPasa.forEach(pasa => {
-    if (pasa.face.yagya) p1.tokens++;
-  });
-  p2.selectedPasa.forEach(pasa => {
-    if (pasa.face.yagya) p2.tokens++;
-  });
+  // Process Yagya tokens
+  const p1YagyaCount = p1.selectedPasa.filter(p => p.face.yagya).length;
+  const p2YagyaCount = p2.selectedPasa.filter(p => p.face.yagya).length;
 
-  // Create working copies
+  if (p1YagyaCount > 0) {
+    combatActions.push({
+      type: 'yagya',
+      playerId: p1.id,
+      execute: () => {
+        p1.tokens += p1YagyaCount;
+        return {
+          event: 'combat-action',
+          data: {
+            actionType: 'yagya',
+            playerId: p1.id,
+            message: `Player 1 gains ${p1YagyaCount} Vardan Token${p1YagyaCount > 1 ? 's' : ''} from Yagya!`,
+            playerTokens: p1.tokens,
+            opponentTokens: p2.tokens
+          }
+        };
+      }
+    });
+  }
+
+  if (p2YagyaCount > 0) {
+    combatActions.push({
+      type: 'yagya',
+      playerId: p2.id,
+      execute: () => {
+        p2.tokens += p2YagyaCount;
+        return {
+          event: 'combat-action',
+          data: {
+            actionType: 'yagya',
+            playerId: p2.id,
+            message: `Player 2 gains ${p2YagyaCount} Vardan Token${p2YagyaCount > 1 ? 's' : ''} from Yagya!`,
+            playerTokens: p1.tokens,
+            opponentTokens: p2.tokens
+          }
+        };
+      }
+    });
+  }
+
+  // Create working copies for combat resolution
   let p1Pasa = [...p1.selectedPasa];
   let p2Pasa = [...p2.selectedPasa];
 
-  // Resolve defenses
-  p1Pasa.filter(p => p && p.face.type === 'bhala').forEach((bhala, idx) => {
-    const kavachIdx = p2Pasa.findIndex(p => p && p.face.type === 'kavach');
-    if (kavachIdx !== -1) {
-      p2Pasa.splice(kavachIdx, 1);
-      p1Pasa[idx] = null;
-      combatLog.push({ type: 'block', attacker: 'p1', move: 'bhala', defender: 'p2', block: 'kavach' });
+  // Resolve P1 attacks and defenses
+  for (let i = 0; i < p1Pasa.length; i++) {
+    const pasa = p1Pasa[i];
+    if (!pasa) continue;
+
+    if (pasa.face.type === 'bhala') {
+      const kavachIdx = p2Pasa.findIndex(p => p && p.face.type === 'kavach');
+      if (kavachIdx !== -1) {
+        const kavachPasa = p2Pasa[kavachIdx];
+        combatActions.push({
+          type: 'block',
+          execute: () => {
+            p2Pasa[kavachIdx] = null;
+            p1Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'block',
+                attacker: 'player1',
+                defender: 'player2',
+                attackType: 'bhala',
+                blockType: 'kavach',
+                message: 'Bhala blocked by Kavach!',
+                removePasa: [
+                  { player: 'player1', pasaId: pasa.pasaId },
+                  { player: 'player2', pasaId: kavachPasa.pasaId }
+                ]
+              }
+            };
+          }
+        });
+      } else {
+        combatActions.push({
+          type: 'damage',
+          execute: () => {
+            p2.health--;
+            p1Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'damage',
+                attacker: 'player1',
+                defender: 'player2',
+                attackType: 'bhala',
+                message: 'Bhala hits! 1 damage dealt!',
+                playerHealth: p1.health,
+                opponentHealth: p2.health,
+                removePasa: [{ player: 'player1', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      }
+    } else if (pasa.face.type === 'teer') {
+      const dhalIdx = p2Pasa.findIndex(p => p && p.face.type === 'dhal');
+      if (dhalIdx !== -1) {
+        const dhalPasa = p2Pasa[dhalIdx];
+        combatActions.push({
+          type: 'block',
+          execute: () => {
+            p2Pasa[dhalIdx] = null;
+            p1Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'block',
+                attacker: 'player1',
+                defender: 'player2',
+                attackType: 'teer',
+                blockType: 'dhal',
+                message: 'Teer blocked by Dhal!',
+                removePasa: [
+                  { player: 'player1', pasaId: pasa.pasaId },
+                  { player: 'player2', pasaId: dhalPasa.pasaId }
+                ]
+              }
+            };
+          }
+        });
+      } else {
+        combatActions.push({
+          type: 'damage',
+          execute: () => {
+            p2.health--;
+            p1Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'damage',
+                attacker: 'player1',
+                defender: 'player2',
+                attackType: 'teer',
+                message: 'Teer hits! 1 damage dealt!',
+                playerHealth: p1.health,
+                opponentHealth: p2.health,
+                removePasa: [{ player: 'player1', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      }
+    } else if (pasa.face.type === 'kapat') {
+      if (p2.tokens > 0) {
+        combatActions.push({
+          type: 'steal',
+          execute: () => {
+            p2.tokens--;
+            p1.tokens++;
+            p1Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'steal',
+                attacker: 'player1',
+                defender: 'player2',
+                message: 'Kapat steals 1 Vardan Token!',
+                playerTokens: p1.tokens,
+                opponentTokens: p2.tokens,
+                removePasa: [{ player: 'player1', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      } else {
+        combatActions.push({
+          type: 'steal-fail',
+          execute: () => {
+            p1Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'steal-fail',
+                attacker: 'player1',
+                message: 'Kapat failed - no tokens to steal!',
+                removePasa: [{ player: 'player1', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      }
     }
-  });
+  }
 
-  p1Pasa.filter(p => p && p.face.type === 'teer').forEach((teer, idx) => {
-    const dhalIdx = p2Pasa.findIndex(p => p && p.face.type === 'dhal');
-    if (dhalIdx !== -1) {
-      p2Pasa.splice(dhalIdx, 1);
-      p1Pasa[idx] = null;
-      combatLog.push({ type: 'block', attacker: 'p1', move: 'teer', defender: 'p2', block: 'dhal' });
+  // Resolve P2 attacks and defenses
+  for (let i = 0; i < p2Pasa.length; i++) {
+    const pasa = p2Pasa[i];
+    if (!pasa) continue;
+
+    if (pasa.face.type === 'bhala') {
+      const kavachIdx = p1Pasa.findIndex(p => p && p.face.type === 'kavach');
+      if (kavachIdx !== -1) {
+        const kavachPasa = p1Pasa[kavachIdx];
+        combatActions.push({
+          type: 'block',
+          execute: () => {
+            p1Pasa[kavachIdx] = null;
+            p2Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'block',
+                attacker: 'player2',
+                defender: 'player1',
+                attackType: 'bhala',
+                blockType: 'kavach',
+                message: 'Bhala blocked by Kavach!',
+                removePasa: [
+                  { player: 'player2', pasaId: pasa.pasaId },
+                  { player: 'player1', pasaId: kavachPasa.pasaId }
+                ]
+              }
+            };
+          }
+        });
+      } else {
+        combatActions.push({
+          type: 'damage',
+          execute: () => {
+            p1.health--;
+            p2Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'damage',
+                attacker: 'player2',
+                defender: 'player1',
+                attackType: 'bhala',
+                message: 'Bhala hits! 1 damage dealt!',
+                playerHealth: p1.health,
+                opponentHealth: p2.health,
+                removePasa: [{ player: 'player2', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      }
+    } else if (pasa.face.type === 'teer') {
+      const dhalIdx = p1Pasa.findIndex(p => p && p.face.type === 'dhal');
+      if (dhalIdx !== -1) {
+        const dhalPasa = p1Pasa[dhalIdx];
+        combatActions.push({
+          type: 'block',
+          execute: () => {
+            p1Pasa[dhalIdx] = null;
+            p2Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'block',
+                attacker: 'player2',
+                defender: 'player1',
+                attackType: 'teer',
+                blockType: 'dhal',
+                message: 'Teer blocked by Dhal!',
+                removePasa: [
+                  { player: 'player2', pasaId: pasa.pasaId },
+                  { player: 'player1', pasaId: dhalPasa.pasaId }
+                ]
+              }
+            };
+          }
+        });
+      } else {
+        combatActions.push({
+          type: 'damage',
+          execute: () => {
+            p1.health--;
+            p2Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'damage',
+                attacker: 'player2',
+                defender: 'player1',
+                attackType: 'teer',
+                message: 'Teer hits! 1 damage dealt!',
+                playerHealth: p1.health,
+                opponentHealth: p2.health,
+                removePasa: [{ player: 'player2', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      }
+    } else if (pasa.face.type === 'kapat') {
+      if (p1.tokens > 0) {
+        combatActions.push({
+          type: 'steal',
+          execute: () => {
+            p1.tokens--;
+            p2.tokens++;
+            p2Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'steal',
+                attacker: 'player2',
+                defender: 'player1',
+                message: 'Kapat steals 1 Vardan Token!',
+                playerTokens: p1.tokens,
+                opponentTokens: p2.tokens,
+                removePasa: [{ player: 'player2', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      } else {
+        combatActions.push({
+          type: 'steal-fail',
+          execute: () => {
+            p2Pasa[i] = null;
+            return {
+              event: 'combat-action',
+              data: {
+                actionType: 'steal-fail',
+                attacker: 'player2',
+                message: 'Kapat failed - no tokens to steal!',
+                removePasa: [{ player: 'player2', pasaId: pasa.pasaId }]
+              }
+            };
+          }
+        });
+      }
     }
-  });
-
-  p2Pasa.filter(p => p && p.face.type === 'bhala').forEach((bhala, idx) => {
-    const kavachIdx = p1Pasa.findIndex(p => p && p.face.type === 'kavach');
-    if (kavachIdx !== -1) {
-      p1Pasa.splice(kavachIdx, 1);
-      p2Pasa[idx] = null;
-      combatLog.push({ type: 'block', attacker: 'p2', move: 'bhala', defender: 'p1', block: 'kavach' });
-    }
-  });
-
-  p2Pasa.filter(p => p && p.face.type === 'teer').forEach((teer, idx) => {
-    const dhalIdx = p1Pasa.findIndex(p => p && p.face.type === 'dhal');
-    if (dhalIdx !== -1) {
-      p1Pasa.splice(dhalIdx, 1);
-      p2Pasa[idx] = null;
-      combatLog.push({ type: 'block', attacker: 'p2', move: 'teer', defender: 'p1', block: 'dhal' });
-    }
-  });
-
-  // Resolve attacks
-  p1Pasa.filter(p => p && (p.face.type === 'bhala' || p.face.type === 'teer')).forEach(() => {
-    p2.health--;
-    combatLog.push({ type: 'damage', attacker: 'p1', defender: 'p2' });
-  });
-
-  p2Pasa.filter(p => p && (p.face.type === 'bhala' || p.face.type === 'teer')).forEach(() => {
-    p1.health--;
-    combatLog.push({ type: 'damage', attacker: 'p2', defender: 'p1' });
-  });
-
-  // Resolve token stealing
-  p1Pasa.filter(p => p && p.face.type === 'kapat').forEach(() => {
-    if (p2.tokens > 0) {
-      p2.tokens--;
-      p1.tokens++;
-      combatLog.push({ type: 'steal', attacker: 'p1', defender: 'p2' });
-    }
-  });
-
-  p2Pasa.filter(p => p && p.face.type === 'kapat').forEach(() => {
-    if (p1.tokens > 0) {
-      p1.tokens--;
-      p2.tokens++;
-      combatLog.push({ type: 'steal', attacker: 'p2', defender: 'p1' });
-    }
-  });
+  }
 
   // Execute end-phase Devta cards
   const endVardans = [];
@@ -497,24 +790,47 @@ function resolveCombat(gameId) {
 
   endVardans.forEach(({ player, card, playerId }) => {
     if (player.tokens >= card.tokensRequired && card.type === 'healer') {
-      player.tokens -= card.tokensRequired;
-      const healAmount = Math.min(card.heal, GAME_CONSTANTS.STARTING_HEALTH - player.health);
-      player.health += healAmount;
-      io.to(gameId).emit('devta-effect', {
-        playerId,
-        cardName: card.name,
-        effect: `Healed ${healAmount} health`,
-        targetHealth: player.health
+      combatActions.push({
+        type: 'devta-end',
+        execute: () => {
+          player.tokens -= card.tokensRequired;
+          const healAmount = Math.min(card.heal, GAME_CONSTANTS.STARTING_HEALTH - player.health);
+          player.health += healAmount;
+          return {
+            event: 'combat-action',
+            data: {
+              actionType: 'devta-heal',
+              playerId,
+              cardName: card.name,
+              message: `${card.name}: Healed ${healAmount} health!`,
+              playerHealth: p1.health,
+              opponentHealth: p2.health,
+              playerTokens: p1.tokens,
+              opponentTokens: p2.tokens
+            }
+          };
+        }
       });
     }
   });
 
-  // Send combat results
-  io.to(gameId).emit('combat-resolved', {
-    combatLog,
-    player1: { health: p1.health, tokens: p1.tokens },
-    player2: { health: p2.health, tokens: p2.tokens }
-  });
+  // Execute actions sequentially with 2-second delays
+  for (let i = 0; i < combatActions.length; i++) {
+    const action = combatActions[i];
+    const result = action.execute();
+    
+    if (result) {
+      io.to(gameId).emit(result.event, result.data);
+    }
+    
+    // Wait 2 seconds before next action (except for the last one)
+    if (i < combatActions.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+
+  // Wait a bit after all actions, then check win condition
+  await new Promise(resolve => setTimeout(resolve, 1000));
 
   // Check win condition
   if (p1.health <= 0 || p2.health <= 0) {
@@ -533,17 +849,13 @@ function resolveCombat(gameId) {
     game.devtaSelection = {};
     game.phase = 'ran-neeti';
     
-    // Assign new Devta cards
-    const newDevtaCards = assignDevtaCards();
-    p1.devtaCard = newDevtaCards.player1;
-    p2.devtaCard = newDevtaCards.player2;
+    // DO NOT reassign Devta cards - they persist throughout the game
 
     setTimeout(() => {
       io.to(gameId).emit('new-round', {
         phase: 'ran-neeti',
-        currentTurn: game.currentTurn,
-        player1Devta: p1.devtaCard,
-        player2Devta: p2.devtaCard
+        currentTurn: game.currentTurn
+        // No Devta card info - they remain the same
       });
     }, 3000);
   }
